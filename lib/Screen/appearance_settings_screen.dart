@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:omar_pos/db_helper.dart'; // المسار الصحيح لقواعد البيانات
+import 'package:omar_pos/main.dart'; // سطر الاستيراد اللازم للتعرف على الـ Notifiers المعرفة في main.dart
 
 class AppearanceSettingsScreen extends StatefulWidget {
   final bool isDarkMode;
@@ -19,6 +21,7 @@ class AppearanceSettingsScreen extends StatefulWidget {
 class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
   String _mainButtonSize = 'وسط';
   String _posItemSize = 'وسط';
+  late bool _currentIsDarkMode;
 
   // اللون الرئيسي المختار للنظام
   Color _selectedPrimaryColor = Colors.blue;
@@ -32,26 +35,100 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
     Colors.deepPurple,
     Colors.indigo,
     Colors.blueGrey,
+    Colors.amber,
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _currentIsDarkMode = widget.isDarkMode;
+    _loadSavedSettings();
+  }
+
+  // تحميل الإعدادات المحفوظة من قاعدة البيانات
+  Future<void> _loadSavedSettings() async {
+    final savedColorVal = await DBHelper.getSetting('theme_color');
+    final savedMainBtn = await DBHelper.getSetting('main_button_size');
+    final savedPosItem = await DBHelper.getSetting('pos_item_size');
+    final savedThemeMode = await DBHelper.getSetting('is_dark_mode');
+
+    if (mounted) {
+      setState(() {
+        if (savedColorVal != null) {
+          _selectedPrimaryColor = Color(int.parse(savedColorVal));
+        }
+        if (savedMainBtn != null) {
+          _mainButtonSize = savedMainBtn;
+        }
+        if (savedPosItem != null) {
+          _posItemSize = savedPosItem;
+        }
+        if (savedThemeMode != null) {
+          _currentIsDarkMode = savedThemeMode == 'true';
+        }
+      });
+    }
+  }
+
+  // حفظ الإعدادات وتطبيقها فوراً على التطبيق عند الضغط على حفظ فقط
+  Future<void> _saveSettings() async {
+    await DBHelper.saveSetting('theme_color', _selectedPrimaryColor.toARGB32().toString());
+    await DBHelper.saveSetting('main_button_size', _mainButtonSize);
+    await DBHelper.saveSetting('pos_item_size', _posItemSize);
+    await DBHelper.saveSetting('is_dark_mode', _currentIsDarkMode.toString());
+
+    // التحديث الفوري المباشر لمتغيرات الـ Notifiers الموجودة في main.dart لتتغير الألوان والأوضاع لحظياً
+    primaryColorNotifier.value = _selectedPrimaryColor;
+    themeModeNotifier.value = _currentIsDarkMode ? ThemeMode.dark : ThemeMode.light;
+
+    // إرسال القيم المحدثة عبر الـ Callbacks أيضاً
+    if (widget.onColorChanged != null) {
+      widget.onColorChanged!(_selectedPrimaryColor);
+    }
+    widget.onThemeChanged(_currentIsDarkMode);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تم حفظ وتطبيق إعدادات المظهر بنجاح'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    // داخل هذه الشاشة، نستخدم اللون المؤقت لكي يرى المستخدم معاينة اللون الذي يضغطه
+    final primaryThemeColor = _selectedPrimaryColor;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('إعدادات المظهر')),
+      appBar: AppBar(
+        title: const Text('إعدادات المظهر'),
+        backgroundColor: primaryThemeColor,
+        foregroundColor: Colors.white,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('نمط المظهر العام', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const Text(
+            'نمط المظهر العام',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
           const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: !widget.isDarkMode ? Colors.blue : Colors.grey.shade800,
+                    backgroundColor: !_currentIsDarkMode ? primaryThemeColor : Colors.grey.shade800,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  onPressed: () => widget.onThemeChanged(false),
+                  onPressed: () {
+                    setState(() {
+                      _currentIsDarkMode = false;
+                    });
+                  },
                   icon: const Icon(Icons.wb_sunny, color: Colors.white),
                   label: const Text('وضع فاتح', style: TextStyle(color: Colors.white)),
                 ),
@@ -60,10 +137,14 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
               Expanded(
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: widget.isDarkMode ? Colors.blue : Colors.grey.shade800,
+                    backgroundColor: _currentIsDarkMode ? primaryThemeColor : Colors.grey.shade800,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  onPressed: () => widget.onThemeChanged(true),
+                  onPressed: () {
+                    setState(() {
+                      _currentIsDarkMode = true;
+                    });
+                  },
                   icon: const Icon(Icons.nightlight_round, color: Colors.white),
                   label: const Text('وضع داكن', style: TextStyle(color: Colors.white)),
                 ),
@@ -71,23 +152,23 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
             ],
           ),
           const Divider(height: 30),
-          
+
           // قسم تغيير ألوان واجهات النظام
-          const Text('لون واجهات النظام الرئيسية', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const Text(
+            'لون واجهات النظام الرئيسية',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
           const SizedBox(height: 10),
           Wrap(
             spacing: 12,
             runSpacing: 10,
             children: _systemColors.map((color) {
-              final isSelected = _selectedPrimaryColor.value == color.value;
+              final isSelected = _selectedPrimaryColor.toARGB32() == color.toARGB32();
               return GestureDetector(
                 onTap: () {
                   setState(() {
                     _selectedPrimaryColor = color;
                   });
-                  if (widget.onColorChanged != null) {
-                    widget.onColorChanged!(color);
-                  }
                 },
                 child: Container(
                   width: 44,
@@ -117,43 +198,55 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
           ),
 
           const Divider(height: 30),
-          const Text('حجم الأزرار والعرض', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const Text(
+            'حجم الأزرار والعرض',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
           const SizedBox(height: 10),
           DropdownButtonFormField<String>(
             value: _mainButtonSize,
-            decoration: const InputDecoration(labelText: 'حجم أزرار الشاشة الرئيسية'),
-            items: ['صغير', 'وسط', 'كبير'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+            decoration: const InputDecoration(
+              labelText: 'حجم أزرار الشاشة الرئيسية',
+              border: OutlineInputBorder(),
+            ),
+            items: ['صغير', 'وسط', 'كبير']
+                .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                .toList(),
             onChanged: (val) => setState(() => _mainButtonSize = val!),
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
             value: _posItemSize,
-            decoration: const InputDecoration(labelText: 'حجم أصناف كروت نقطة البيع (POS)'),
-            items: ['صغير', 'وسط', 'كبير'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+            decoration: const InputDecoration(
+              labelText: 'حجم أصناف كروت نقطة البيع (POS)',
+              border: OutlineInputBorder(),
+            ),
+            items: ['صغير', 'وسط', 'كبير']
+                .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                .toList(),
             onChanged: (val) => setState(() => _posItemSize = val!),
           ),
-          
+
           const SizedBox(height: 30),
-          
-          // زر حفظ الاعدادات
+
+          // زر حفظ الإعدادات (عند الضغط عليه يتم تطبيق الألوان والوضع فوراً على التطبيق بالكامل)
           SizedBox(
             width: double.infinity,
             height: 48,
             child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
-                backgroundColor: _selectedPrimaryColor,
+                backgroundColor: primaryThemeColor,
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
               ),
               icon: const Icon(Icons.save),
-              label: const Text('حفظ الإعدادات', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم حفظ إعدادات المظهر بنجاح')),
-                );
-              },
+              label: const Text(
+                'حفظ الإعدادات',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              onPressed: _saveSettings,
             ),
           ),
         ],

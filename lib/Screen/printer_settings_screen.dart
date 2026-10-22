@@ -1,5 +1,9 @@
+import 'dart:convert';
+import 'dart:io'; // لاستخدام Socket للواي فاي
 import 'package:flutter/material.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
+import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
+import 'package:omar_pos/db_helper.dart';
 
 class PrinterSettingsScreen extends StatefulWidget {
   const PrinterSettingsScreen({Key? key}) : super(key: key);
@@ -10,20 +14,151 @@ class PrinterSettingsScreen extends StatefulWidget {
 
 class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   List<Map<String, dynamic>> _printers = [];
-  int? _selectedPrinterIndex;
+  bool _isTesting = false;
 
-  bool _autoKitchen = false;
-  bool _autoCustomer = false;
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedSettings();
+  }
+
+  Future<void> _loadSavedSettings() async {
+    final savedPrintersJson = await DBHelper.getSetting('printers_list');
+
+    if (mounted) {
+      setState(() {
+        if (savedPrintersJson != null && savedPrintersJson.isNotEmpty) {
+          final List<dynamic> decoded = jsonDecode(savedPrintersJson);
+          _printers = decoded.map((e) => Map<String, dynamic>.from(e)).toList();
+        }
+      });
+    }
+  }
+
+  Future<void> _saveSettings() async {
+    final printersJson = jsonEncode(_printers);
+    await DBHelper.saveSetting('printers_list', printersJson);
+  }
+
+  // تحويل القيمة البرمجية إلى حجم PosTextSize المناسب لمكتبة الطباعة
+  PosTextSize _getPosTextSize(String sizeStr) {
+    switch (sizeStr) {
+      case 'medium':
+        return PosTextSize.size1; // متوسط (يمكن دمجه أو جعله بحجم مناسب)
+      case 'large':
+        return PosTextSize.size2; // كبير (ضعف الحجم)
+      case 'huge':
+        return PosTextSize.size3; // ضخم (ثلاثة أضعاف)
+      case 'normal':
+      default:
+        return PosTextSize.size1; // عادي
+    }
+  }
+
+  // دالة تجربة الطباعة مع أخذ مقاس الخط المختار بعين الاعتبار وتعديل البلوتوث بـ Chunking
+  Future<void> _testPrint(Map<String, dynamic> printer) async {
+    setState(() => _isTesting = true);
+
+    try {
+      if (printer['paperSize'] == 'A4') {
+        throw 'طابعات الـ A4 تتطلب نظام طباعة مستندات (PDF)، يرجى تجربة الطابعات الحرارية المعتادة.';
+      }
+
+      final profile = await CapabilityProfile.load();
+      final generator = Generator(
+        printer['paperSize'] == '57' ? PaperSize.mm58 : PaperSize.mm80,
+        profile,
+      );
+
+      String fontSizeSetting = printer['fontSize'] ?? 'normal';
+      PosTextSize textSize = _getPosTextSize(fontSizeSetting);
+
+      List<int> bytes = [];
+      bytes += generator.text('OMAR POS TEST',
+          styles: PosStyles(align: PosAlign.center, bold: true, height: textSize, width: textSize));
+      bytes += generator.text('--------------------------------', styles: const PosStyles(align: PosAlign.center));
+      bytes += generator.text('SUCCESSFUL PRINT TEST!', 
+          styles: PosStyles(align: PosAlign.center, bold: true, height: textSize, width: textSize));
+      
+      bytes += generator.text('Printer: ${printer['name']}', styles: const PosStyles(align: PosAlign.center));
+      bytes += generator.text('IP/MAC: ${printer['connection'] == 'واي فاي' ? printer['ip'] : printer['macAddress']}', styles: const PosStyles(align: PosAlign.center));
+      bytes += generator.text('Font Size: $fontSizeSetting', styles: const PosStyles(align: PosAlign.center));
+      
+      // زيادة التغذية إلى 4 أسطر لضمان خروج الورقة كاملة للاختبار
+      bytes += generator.feed(4);
+      bytes += generator.cut();
+
+      if (printer['connection'] == 'واي فاي') {
+        final String ip = (printer['ip'] ?? '').trim();
+        if (ip.isEmpty) {
+          throw 'عنوان الـ IP غير مدخل!';
+        }
+
+        final socket = await Socket.connect(ip, 9100, timeout: const Duration(seconds: 5));
+        socket.add(bytes);
+        await socket.flush();
+        await socket.close();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('تمت طباعة التجربة على (${printer['name']}) بنجاح!'), backgroundColor: Colors.green),
+          );
+        }
+      } else {
+        final String mac = (printer['macAddress'] ?? '').trim();
+        if (mac.isEmpty) {
+          throw 'عنوان MAC الخاص بالبلوتوث غير مدخل!';
+        }
+
+        bool connected = await PrintBluetoothThermal.connect(macPrinterAddress: mac);
+        if (connected) {
+          // تقسيم البيانات إلى أجزاء (Chunks) بحجم 512 بايت لتجنب امتلاء بافر طابعة البلوتوث وانقطاع الطباعة في المنتصف
+          int chunkSize = 512;
+          for (int i = 0; i < bytes.length; i += chunkSize) {
+            int end = (i + chunkSize < bytes.length) ? i + chunkSize : bytes.length;
+            List<int> chunk = bytes.sublist(i, end);
+            
+            await PrintBluetoothThermal.writeBytes(chunk);
+            await Future.delayed(const Duration(milliseconds: 50)); // مهلة قصيرة لمعالجة البافر
+          }
+
+          // مهلة إضافية قبل قطع الاتصال لضمان طباعة الأسطر الأخيرة بالكامل
+          await Future.delayed(const Duration(milliseconds: 500));
+          await PrintBluetoothThermal.disconnect;
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('تمت طباعة التجربة على (${printer['name']}) بنجاح!'), backgroundColor: Colors.green),
+            );
+          }
+        } else {
+          throw 'تعذر الاتصال بطابعة البلوتوث!';
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل الاتصال بالطابعة: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isTesting = false);
+    }
+  }
 
   void _showPrinterDialog({Map<String, dynamic>? printerToEdit, int? editIndex}) {
     final nameCtrl = TextEditingController(text: printerToEdit?['name'] ?? '');
     final ipCtrl = TextEditingController(text: printerToEdit?['ip'] ?? '');
     final macCtrl = TextEditingController(text: printerToEdit?['macAddress'] ?? '');
-    
+
     String connection = printerToEdit?['connection'] ?? 'بلوتوث';
     String usage = printerToEdit?['usage'] ?? 'زبون';
     String paperSize = printerToEdit?['paperSize'] ?? '80';
+    String fontSize = printerToEdit?['fontSize'] ?? 'normal'; // القيمة البرمجية الافتراضية
     String selectedBtDevice = printerToEdit?['btDevice'] ?? '';
+    
+    bool printerAutoPrint = printerToEdit?['autoPrint'] ?? true;
+    bool isDefaultPrinter = printerToEdit?['isDefault'] ?? false;
 
     showDialog(
       context: context,
@@ -38,8 +173,27 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                   DropdownButtonFormField<String>(
                     value: usage,
                     decoration: const InputDecoration(labelText: 'نوع الطابعة (الاستخدام)'),
-                    items: ['مطبخ', 'زبون'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+                    items: ['مطبخ', 'زبون', 'تقرير'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
                     onChanged: (val) => setDlgState(() => usage = val!),
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    title: const Text(
+                      'تعيين كطابعة افتراضية لهذا النوع',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text('ستكون الطابعة الرئيسية لعمليات الـ "$usage"'),
+                    value: isDefaultPrinter,
+                    onChanged: (val) => setDlgState(() => isDefaultPrinter = val),
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    title: Text(
+                      'طباعة تلقائية لهذه الطابعة ($usage)',
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
+                    value: printerAutoPrint,
+                    onChanged: (val) => setDlgState(() => printerAutoPrint = val),
                   ),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<String>(
@@ -49,8 +203,6 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                     onChanged: (val) => setDlgState(() => connection = val!),
                   ),
                   const SizedBox(height: 12),
-                  
-                  // جلب الأجهزة المقترنة الفعلية من بلوتوث النظام
                   if (connection == 'بلوتوث') ...[
                     SizedBox(
                       width: double.infinity,
@@ -62,9 +214,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                         icon: const Icon(Icons.bluetooth_searching),
                         label: const Text('البحث عن الأجهزة المقترنة (Bluetooth)'),
                         onPressed: () async {
-                          // التصحيح الأساسي هنا: pairedBluetooths مع حرف s في النهاية
                           final List<BluetoothInfo> pairedBtDevices = await PrintBluetoothThermal.pairedBluetooths;
-                          
                           if (!context.mounted) return;
 
                           showModalBottomSheet(
@@ -131,7 +281,11 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                   ] else ...[
                     TextField(
                       controller: ipCtrl,
-                      decoration: const InputDecoration(labelText: 'عنوان IP للطابعة (مثال: 192.168.1.100)'),
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'عنوان IP للطابعة (مثال: 192.168.1.100)',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ],
                   const SizedBox(height: 8),
@@ -143,8 +297,26 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                   DropdownButtonFormField<String>(
                     value: paperSize,
                     decoration: const InputDecoration(labelText: 'مقاس الورق'),
-                    items: ['57', '78', '80'].map((e) => DropdownMenuItem(value: e, child: Text('$e mm'))).toList(),
+                    items: ['57', '78', '80', 'A4']
+                        .map((e) => DropdownMenuItem(value: e, child: Text(e == 'A4' ? 'A4' : '$e mm')))
+                        .toList(),
                     onChanged: (val) => setDlgState(() => paperSize = val!),
+                  ),
+                  const SizedBox(height: 8),
+                  // الخيارات الأربعة المطلوبة بدقة: عادي، متوسط، كبير، ضخم
+                  DropdownButtonFormField<String>(
+                    value: fontSize,
+                    decoration: const InputDecoration(
+                      labelText: 'مقاس الخط عند الطباعة',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 'normal', child: Text('عادي')),
+                      DropdownMenuItem(value: 'medium', child: Text('متوسط')),
+                      DropdownMenuItem(value: 'large', child: Text('كبير')),
+                      DropdownMenuItem(value: 'huge', child: Text('ضخم')),
+                    ],
+                    onChanged: (val) => setDlgState(() => fontSize = val!),
                   ),
                 ],
               ),
@@ -152,24 +324,38 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
               ElevatedButton(
-                onPressed: () {
+                onPressed: () async {
                   final printerData = {
                     'name': nameCtrl.text.trim().isEmpty ? 'طابعة جديدة' : nameCtrl.text.trim(),
                     'connection': connection,
                     'usage': usage,
                     'paperSize': paperSize,
+                    'fontSize': fontSize, 
                     'btDevice': selectedBtDevice,
                     'macAddress': macCtrl.text.trim(),
                     'ip': ipCtrl.text.trim(),
+                    'autoPrint': printerAutoPrint,
+                    'isDefault': isDefaultPrinter,
                   };
+
                   setState(() {
+                    if (isDefaultPrinter) {
+                      for (var p in _printers) {
+                        if (p['usage'] == usage) {
+                          p['isDefault'] = false;
+                        }
+                      }
+                    }
+
                     if (editIndex == null) {
                       _printers.add(printerData);
                     } else {
                       _printers[editIndex] = printerData;
                     }
                   });
-                  Navigator.pop(ctx);
+
+                  await _saveSettings();
+                  if (context.mounted) Navigator.pop(ctx);
                 },
                 child: const Text('حفظ الطابعة'),
               ),
@@ -178,6 +364,17 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
         },
       ),
     );
+  }
+
+  // دالة مطابقة المقاس البرمجي ليعرض بالعربي في البطاقة الرئيسية
+  String _getArabicFontSizeName(String sizeKey) {
+    switch (sizeKey) {
+      case 'medium': return 'متوسط';
+      case 'large': return 'كبير';
+      case 'huge': return 'ضخم';
+      case 'normal':
+      default: return 'عادي';
+    }
   }
 
   @override
@@ -191,49 +388,7 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('الطباعة التلقائية حسب النوع', style: TextStyle(fontWeight: FontWeight.bold)),
-                  SwitchListTile(
-                    title: const Text('طباعة المطبخ تلقائياً'),
-                    value: _autoKitchen,
-                    onChanged: (val) => setState(() => _autoKitchen = val),
-                  ),
-                  SwitchListTile(
-                    title: const Text('طباعة الزبون تلقائياً'),
-                    value: _autoCustomer,
-                    onChanged: (val) => setState(() => _autoCustomer = val),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('الطابعات المضافة:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _selectedPrinterIndex != null ? Colors.orange : Colors.grey,
-                ),
-                onPressed: _selectedPrinterIndex == null
-                    ? null
-                    : () {
-                        final p = _printers[_selectedPrinterIndex!];
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('تم إرسال صفحة تجريبية إلى الطابعة: ${p['name']}')),
-                        );
-                      },
-                icon: const Icon(Icons.print, color: Colors.white),
-                label: const Text('تجربة الطابعة', style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          ),
+          const Text('الطابعات المضافة:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           const Divider(),
           _printers.isEmpty
               ? const Center(child: Padding(padding: EdgeInsets.all(20), child: Text('لا توجد طابعات مضافة. اضغط + للإضافة')))
@@ -243,35 +398,67 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
                   itemCount: _printers.length,
                   itemBuilder: (ctx, i) {
                     final p = _printers[i];
-                    final isSelected = _selectedPrinterIndex == i;
+                    bool isAuto = p['autoPrint'] ?? true;
+                    bool isDefault = p['isDefault'] ?? false;
+                    String fontSizeKey = p['fontSize'] ?? 'normal';
+                    String fontSizeArabic = _getArabicFontSizeName(fontSizeKey);
+
                     return Card(
-                      color: isSelected ? Colors.blue.withOpacity(0.15) : null,
+                      color: isDefault ? Colors.blue.shade50 : null,
                       child: ListTile(
-                        onTap: () => setState(() => _selectedPrinterIndex = i),
                         leading: Icon(
                           p['connection'] == 'بلوتوث' ? Icons.bluetooth : Icons.wifi,
-                          color: isSelected ? Colors.blue : Colors.grey,
+                          color: isDefault ? Colors.blue.shade800 : Colors.blue,
                         ),
-                        title: Text('${p['name']} (${p['usage']})', style: const TextStyle(fontWeight: FontWeight.bold)),
+                        title: Row(
+                          children: [
+                            Text('${p['name']} (${p['usage']})', style: const TextStyle(fontWeight: FontWeight.bold)),
+                            if (isDefault) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: const Text(
+                                  'افتراضية',
+                                  style: TextStyle(color: Colors.white, fontSize: 10),
+                                ),
+                              ),
+                            ]
+                          ],
+                        ),
                         subtitle: Text(
-                          p['connection'] == 'بلوتوث'
+                          (p['connection'] == 'بلوتوث'
                               ? 'الاتصال: بلوتوث (${p['macAddress']}) | المقاس: ${p['paperSize']}mm'
-                              : 'الاتصال: IP (${p['ip']}) | المقاس: ${p['paperSize']}mm',
+                              : 'الاتصال: IP (${p['ip']}) | المقاس: ${p['paperSize']}mm') +
+                          '\nمقاس الخط: $fontSizeArabic | الحالة: ${isAuto ? "تلقائي (مفعل)" : "معطل"}',
                         ),
+                        isThreeLine: true,
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
+                              icon: _isTesting 
+                                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : const Icon(Icons.print, color: Colors.orange),
+                              tooltip: 'تجربة الطباعة',
+                              onPressed: _isTesting ? null : () => _testPrint(p),
+                            ),
+                            IconButton(
                               icon: const Icon(Icons.edit, color: Colors.blue),
+                              tooltip: 'تعديل',
                               onPressed: () => _showPrinterDialog(printerToEdit: p, editIndex: i),
                             ),
                             IconButton(
                               icon: const Icon(Icons.delete, color: Colors.red),
-                              onPressed: () {
+                              tooltip: 'حذف',
+                              onPressed: () async {
                                 setState(() {
                                   _printers.removeAt(i);
-                                  if (_selectedPrinterIndex == i) _selectedPrinterIndex = null;
                                 });
+                                await _saveSettings();
                               },
                             ),
                           ],

@@ -1,42 +1,308 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:file_selector/file_selector.dart'; // مكتبة اختيار الملفات والمجلدات
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart' as p;
+import 'package:omar_pos/db_helper.dart';
 
-class BackupSettingsScreen extends StatelessWidget {
+class BackupSettingsScreen extends StatefulWidget {
   const BackupSettingsScreen({Key? key}) : super(key: key);
+
+  @override
+  State<BackupSettingsScreen> createState() => _BackupSettingsScreenState();
+}
+
+class _BackupSettingsScreenState extends State<BackupSettingsScreen> {
+  String? _customFolderPath;
+  bool _isProcessing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCustomPath();
+  }
+
+  /// قراءة مسار المجلد المحفوظ سابقاً
+  Future<void> _loadCustomPath() async {
+    final path = await DBHelper.getSetting('backup_folder_path');
+    if (path != null && path.isNotEmpty) {
+      setState(() => _customFolderPath = path);
+    } else {
+      final defaultDir = await _getDefaultBackupDirectory();
+      setState(() => _customFolderPath = defaultDir.path);
+    }
+  }
+
+  /// الحصول على المجلد الافتراضي باسم النظام (OmarPOS_Backups)
+  Future<Directory> _getDefaultBackupDirectory() async {
+    Directory? extDir = await getExternalStorageDirectory();
+    extDir ??= await getApplicationDocumentsDirectory();
+
+    final backupDir = Directory(p.join(extDir.path, 'OmarPOS_Backups'));
+    if (!await backupDir.exists()) {
+      await backupDir.create(recursive: true);
+    }
+    return backupDir;
+  }
+
+  /// تغيير موقع مجلد النسخ الاحتياطي باستخدام file_selector
+  Future<void> _changeBackupDirectory() async {
+    String? selectedDirectory = await getDirectoryPath();
+
+    if (selectedDirectory != null) {
+      final newDir = Directory(p.join(selectedDirectory, 'OmarPOS_Backups'));
+      if (!await newDir.exists()) {
+        await newDir.create(recursive: true);
+      }
+
+      await DBHelper.saveSetting('backup_folder_path', newDir.path);
+      setState(() {
+        _customFolderPath = newDir.path;
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تم تغيير مسار الحفظ إلى: ${newDir.path}')),
+      );
+    }
+  }
+
+  /// إنشاء نسخة احتياطية برقم وتاريخ مميز
+  Future<void> _createBackup() async {
+    setState(() => _isProcessing = true);
+    try {
+      final dbPath = await getDatabasesPath();
+      final currentDbFile = File(p.join(dbPath, 'omar_pos.db'));
+
+      if (!await currentDbFile.exists()) {
+        throw Exception('قاعدة البيانات غير موجودة!');
+      }
+
+      final targetDirPath = _customFolderPath ?? (await _getDefaultBackupDirectory()).path;
+      final targetDir = Directory(targetDirPath);
+      if (!await targetDir.exists()) {
+        await targetDir.create(recursive: true);
+      }
+
+      final now = DateTime.now();
+      final timeStamp = '${now.year}${_twoDigits(now.month)}${_twoDigits(now.day)}_${_twoDigits(now.hour)}${_twoDigits(now.minute)}${_twoDigits(now.second)}';
+      final backupFileName = 'OmarPOS_Backup_$timeStamp.db';
+
+      final backupFile = File(p.join(targetDirPath, backupFileName));
+      final safePath = await DBHelper.createBackup();
+      await File(safePath).copy(backupFile.path);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('تم إنشاء النسخة بنجاح:\n$backupFileName'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('فشل إنشاء النسخة: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      setState(() => _isProcessing = false);
+    }
+  }
+
+  /// استعادة نسخة احتياطية عبر قراءة محتوى المجلد مباشرة وعرضها داخل قائمة التطبيق
+  Future<void> _restoreBackup() async {
+    setState(() => _isProcessing = true);
+    try {
+      final targetDirPath = _customFolderPath ?? (await _getDefaultBackupDirectory()).path;
+      final targetDir = Directory(targetDirPath);
+
+      if (!await targetDir.exists()) {
+        throw Exception('مجلد النسخ الاحتياطي غير موجود!');
+      }
+
+      final List<FileSystemEntity> files = targetDir.listSync();
+      final backupFiles = files.where((file) {
+        return file is File && file.path.endsWith('.db');
+      }).toList();
+
+      if (backupFiles.isEmpty) {
+        setState(() => _isProcessing = false);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('لا توجد أي نسخ احتياطية في المجلد حالياً!'), backgroundColor: Colors.orange),
+        );
+        return;
+      }
+
+      // ترتيب الملفات من الأحدث للأقدم
+      backupFiles.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+
+      setState(() => _isProcessing = false);
+
+      if (!mounted) return;
+
+      // إظهار قائمة منبثقة بالنسخ الموجودة
+      showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('اختر النسخة للاستعادة'),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 300,
+              child: ListView.builder(
+                itemCount: backupFiles.length,
+                itemBuilder: (context, index) {
+                  final file = backupFiles[index] as File;
+                  final fileName = p.basename(file.path);
+                  return ListTile(
+                    leading: const Icon(Icons.storage, color: Colors.green),
+                    title: Text(fileName, style: const TextStyle(fontSize: 14)),
+                    onTap: () async {
+                      Navigator.pop(context); // إغلاق النافذة
+                      await _performRestore(file.path); // تنفيذ الاستعادة
+                    },
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('إلغاء'),
+              ),
+            ],
+          );
+        },
+      );
+    } catch (e) {
+      setState(() => _isProcessing = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('حدث خطأ: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  /// زر جديد: استرجاع نسخة احتياطية من أي ملف خارجي في الجهاز (من جهاز آخر)
+  Future<void> _restoreFromFile() async {
+    try {
+      // السماح للمستخدم باختيار ملفات بصيغة db أو أي ملف
+      const XTypeGroup typeGroup = XTypeGroup(
+        label: 'Database files',
+        extensions: <String>['db'],
+      );
+      
+      final XFile? pickedFile = await openFile(acceptedTypeGroups: <XTypeGroup>[typeGroup]);
+
+      if (pickedFile != null) {
+        // تأكيد الاستعادة قبل التنفيذ لأنها ستقوم بالكتابة فوق البيانات الحالية
+        bool? confirm = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('تأكيد الاستعادة'),
+            content: Text('هل أنت متأكد من استعادة البيانات من الملف:\n${pickedFile.name}؟\nسيتم استبدال البيانات الحالية بالكامل!'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('استبدال واستعادة', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+
+        if (confirm == true) {
+          await _performRestore(pickedFile.path);
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطأ في اختيار الملف: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  /// تنفيذ استبدال قاعدة البيانات بالملف المختار
+  Future<void> _performRestore(String selectedFilePath) async {
+    setState(() => _isProcessing = true);
+    try {
+      await DBHelper.restoreBackup(selectedFilePath);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تمت استعادة النسخة الاحتياطية بنجاح! يُفضل إعادة تشغيل التطبيق.'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 4),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('حدث خطأ أثناء الاستعادة: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      setState(() => _isProcessing = false);
+    }
+  }
+
+  String _twoDigits(int n) => n >= 10 ? "$n" : "0$n";
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('النسخ الاحتياطي والاستعادة')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.cloud_upload, color: Colors.blue),
-              title: const Text('إنشاء نسخة احتياطية محلياً'),
-              subtitle: const Text('حفظ نسخة مجلد بيانات النظام على ذاكرة الهاتف'),
-              onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم إنشاء النسخة الاحتياطية بنجاح')),
-                );
-              },
+      body: _isProcessing
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.folder, color: Colors.amber),
+                    title: const Text('موقع مجلد النسخ الاحتياطي'),
+                    subtitle: Text(
+                      _customFolderPath ?? 'جاري جلب المسار...',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    trailing: const Icon(Icons.edit, color: Colors.blue),
+                    onTap: _changeBackupDirectory,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.cloud_upload, color: Colors.blue),
+                    title: const Text('إنشاء نسخة احتياطية جديدة'),
+                    subtitle: const Text('حفظ نسخة كاملة باسم ورقم مميز بناءً على الوقت الحالي'),
+                    onTap: _createBackup,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.cloud_download, color: Colors.green),
+                    title: const Text('استعادة من مجلد النسخ'),
+                    subtitle: const Text('اختيار نسخة من المجلد الافتراضي أو المخصص للتطبيق'),
+                    onTap: _restoreBackup,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // زر الاسترجاع من ملف خارجي (من جهاز آخر)
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.folder_open, color: Colors.deepOrange),
+                    title: const Text('استرجاع من ملف خارجي'),
+                    subtitle: const Text('اختيار ملف قاعدة بيانات من الذاكرة أو من جهاز آخر (.db)'),
+                    onTap: _restoreFromFile,
+                  ),
+                ),
+              ],
             ),
-          ),
-          const SizedBox(height: 10),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.cloud_download, color: Colors.green),
-              title: const Text('استعادة نسخة احتياطية'),
-              subtitle: const Text('اختيار ملف بيانات واسترجاعه للنظام'),
-              onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('جارٍ الاستعادة...')),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
