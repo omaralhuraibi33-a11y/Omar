@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'db_helper.dart';
 
 class FinancialReportScreen extends StatefulWidget {
@@ -33,7 +36,6 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // جلب البيانات من دالة DBHelper (قم بربط كل دالة طبقاً لما هو معرف لديك في DBHelper)
       final sales = await DBHelper.getTotalSales();
       final cost = await DBHelper.getSalesCost();
       final purchases = await DBHelper.getTotalPurchases();
@@ -59,17 +61,131 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
         _isLoading = false;
       });
     } catch (e) {
-      // في حال لم تكن الدوال موجودة بنفس الاسم بعد في DBHelper، تجنباً لإيقاف التطبيق
       setState(() => _isLoading = false);
     }
   }
 
-  // حساب صافي الربح
-  // (المبيعات الصافية - تكلفة المبيعات) + الإيرادات الأخرى - المصروفات
-  double get _netProfit {
-    final netSales = _totalSales - _salesReturns;
-    final grossProfit = netSales - _salesCost;
-    return grossProfit + _totalRevenues - _totalExpenses;
+  // 1. صافي المبيعات (إجمالي المبيعات - المرتجعات)
+  double get _actualNetSales => _totalSales - _salesReturns;
+
+  // 2. صافي الربح / الخسارة
+  double get _netProfit => _actualNetSales - _salesCost - _totalExpenses;
+
+  // دالة تصدير وحفظ التقرير كـ PDF بتصميم احترافي ومنظم
+  Future<void> _exportToPdf() async {
+    final pdf = pw.Document();
+
+    // دعم الخط العربي Cairo
+    final arabicFont = await PdfGoogleFonts.cairoRegular();
+    final arabicBoldFont = await PdfGoogleFonts.cairoBold();
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        textDirection: pw.TextDirection.rtl,
+        build: (pw.Context context) {
+          return [
+            // 1. ترويسة التقرير
+            pw.Container(
+              padding: const pw.EdgeInsets.all(12),
+              decoration: pw.BoxDecoration(
+                color: PdfColors.teal50,
+                borderRadius: pw.BorderRadius.circular(8),
+              ),
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text('التقرير المالي العام', style: pw.TextStyle(font: arabicBoldFont, fontSize: 18, color: PdfColors.teal900)),
+                      pw.SizedBox(height: 4),
+                      pw.Text('ملخص الحركات والمؤشرات المالية للنظام', style: pw.TextStyle(font: arabicFont, fontSize: 11, color: PdfColors.grey700)),
+                    ],
+                  ),
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.end,
+                    children: [
+                      pw.Text('تاريخ التقرير: ${DateTime.now().toLocal().toString().split(' ')[0]}', style: pw.TextStyle(font: arabicFont, fontSize: 10)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 15),
+
+            // 2. صندوق صافي الربح / الخسارة الرئيسي
+            pw.Container(
+              width: double.infinity,
+              padding: const pw.EdgeInsets.all(14),
+              decoration: pw.BoxDecoration(
+                color: _netProfit >= 0 ? PdfColors.green800 : PdfColors.red800,
+                borderRadius: pw.BorderRadius.circular(8),
+              ),
+              child: pw.Column(
+                children: [
+                  pw.Text(
+                    _netProfit >= 0 ? 'صافي الربح' : 'صافي الخسارة',
+                    style: pw.TextStyle(font: arabicBoldFont, fontSize: 14, color: PdfColors.white),
+                  ),
+                  pw.SizedBox(height: 4),
+                  pw.Text(
+                    _netProfit.toStringAsFixed(2),
+                    style: pw.TextStyle(font: arabicBoldFont, fontSize: 22, color: PdfColors.white),
+                  ),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 15),
+
+            pw.Text('تفاصيل المؤشرات والحركات المالية:', style: pw.TextStyle(font: arabicBoldFont, fontSize: 14, color: PdfColors.teal900)),
+            pw.SizedBox(height: 8),
+
+            // 3. جدول البيانات المالية (المؤشر المالي أولاً ثم القيمة من اليمين لليسار)
+            pw.Table.fromTextArray(
+              headers: ['المؤشر المالي', 'القيمة'],
+              data: <List<String>>[
+                ['إجمالي المبيعات', _totalSales.toStringAsFixed(2)],
+                ['إجمالي مردود المبيعات', _salesReturns.toStringAsFixed(2)],
+                ['صافي المبيعات', _actualNetSales.toStringAsFixed(2)],
+                ['تكلفة المبيعات', _salesCost.toStringAsFixed(2)],
+                ['إجمالي المشتريات', _totalPurchases.toStringAsFixed(2)],
+                ['إجمالي مردود المشتريات', _purchasesReturns.toStringAsFixed(2)],
+                ['إجمالي الإيرادات', _totalRevenues.toStringAsFixed(2)],
+                ['إجمالي المصروفات', _totalExpenses.toStringAsFixed(2)],
+                ['الباقي على العملاء', _customersBalance.toStringAsFixed(2)],
+                ['الباقي للموردين', _suppliersBalance.toStringAsFixed(2)],
+                ['الصندوق الرئيسي', _mainVaultBalance.toStringAsFixed(2)],
+              ],
+              headerStyle: pw.TextStyle(font: arabicBoldFont, color: PdfColors.white, fontSize: 10),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.teal700),
+              cellStyle: pw.TextStyle(font: arabicFont, fontSize: 10),
+              cellAlignment: pw.Alignment.center,
+              columnWidths: {
+                0: const pw.FlexColumnWidth(3),
+                1: const pw.FlexColumnWidth(2),
+              },
+            ),
+            pw.SizedBox(height: 30),
+
+            // 4. توقيعات المسؤولين
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text('توقيع المحاسب: .....................', style: pw.TextStyle(font: arabicFont, fontSize: 10)),
+                pw.Text('توقيع المدير العام: .....................', style: pw.TextStyle(font: arabicFont, fontSize: 10)),
+              ],
+            )
+          ];
+        },
+      ),
+    );
+
+    // مشاركة أو فتح نافذة حفظ ملف الـ PDF
+    await Printing.sharePdf(
+      bytes: await pdf.save(),
+      filename: 'financial_report_${DateTime.now().millisecondsSinceEpoch}.pdf',
+    );
   }
 
   @override
@@ -79,6 +195,13 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
         title: const Text('التقرير المالي العام'),
         centerTitle: true,
         actions: [
+          // زر تصدير التقرير PDF
+          IconButton(
+            icon: const Icon(Icons.picture_as_pdf),
+            tooltip: 'تصدير كـ PDF',
+            onPressed: _exportToPdf,
+          ),
+          // زر تحديث البيانات
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'تحديث البيانات',
@@ -95,9 +218,7 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
                 physics: const AlwaysScrollableScrollPhysics(),
                 child: Column(
                   children: [
-                    // كارت صافي الربح الرئيسي
-                    _buildNetProfitCard(),
-
+                    _buildNetProfitCard(context),
                     const SizedBox(height: 16),
                     const Align(
                       alignment: Alignment.centerRight,
@@ -107,8 +228,6 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-
-                    // شبكة المؤشرات المالية
                     GridView.count(
                       crossAxisCount: 2,
                       crossAxisSpacing: 10,
@@ -119,6 +238,7 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
                       children: [
                         _buildStatCard('إجمالي المبيعات', _totalSales, Icons.point_of_sale, Colors.teal),
                         _buildStatCard('إجمالي مردود المبيعات', _salesReturns, Icons.assignment_return, Colors.deepOrange),
+                        _buildStatCard('صافي المبيعات', _actualNetSales, Icons.sell, Colors.teal.shade700),
                         _buildStatCard('تكلفة المبيعات', _salesCost, Icons.inventory_2_outlined, Colors.brown),
                         _buildStatCard('إجمالي المشتريات', _totalPurchases, Icons.shopping_bag, Colors.blue),
                         _buildStatCard('إجمالي مردود المشتريات', _purchasesReturns, Icons.assignment_return_outlined, Colors.purple),
@@ -136,15 +256,20 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
     );
   }
 
-  // ودجت بطاقة صافي الربح (تتغير ألوانها بحسب الربح/الخسارة)
-  Widget _buildNetProfitCard() {
+  Widget _buildNetProfitCard(BuildContext context) {
     final isProfit = _netProfit >= 0;
+    // لون الثيم الرئيسي لخلفية المربع
+    final primaryColor = Theme.of(context).primaryColor;
+    
+    // لون الحالة (أخضر للربح، أحمر للخسارة للعنوان والأيقونة فقط)
+    final statusColor = isProfit ? Colors.greenAccent.shade400 : Colors.redAccent.shade100;
+
     return Card(
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: isProfit ? Colors.green.shade800 : Colors.red.shade800,
+      color: primaryColor,
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
             Row(
@@ -152,24 +277,39 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
               children: [
                 Icon(
                   isProfit ? Icons.trending_up : Icons.trending_down,
-                  color: Colors.white,
+                  color: statusColor,
                   size: 28,
                 ),
                 const SizedBox(width: 8),
                 Text(
                   isProfit ? 'صافي الربح' : 'صافي الخسارة',
-                  style: const TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontSize: 18, 
+                    color: statusColor, 
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 10),
             Text(
-              '${_netProfit.toStringAsFixed(2)}',
+              _netProfit.toStringAsFixed(2),
               style: const TextStyle(
                 fontSize: 28,
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
               ),
+            ),
+            const Divider(color: Colors.white54, height: 24),
+            Column(
+              children: [
+                _buildEquationRow('إجمالي المبيعات:', _totalSales),
+                _buildEquationRow('ناقصاً المرتجعات:', -_salesReturns, isMinus: true),
+                _buildEquationRow('= صافي المبيعات:', _actualNetSales, isBold: true),
+                _buildEquationRow('ناقصاً تكلفة المبيعات:', -_salesCost, isMinus: true),
+                if (_totalExpenses > 0)
+                  _buildEquationRow('ناقصاً المصروفات:', -_totalExpenses, isMinus: true),
+              ],
             ),
           ],
         ),
@@ -177,7 +317,33 @@ class _FinancialReportScreenState extends State<FinancialReportScreen> {
     );
   }
 
-  // ودجت تصميم البطاقات الفرعية
+  Widget _buildEquationRow(String label, double value, {bool isMinus = false, bool isBold = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: isBold ? Colors.white : Colors.white70,
+              fontSize: isBold ? 13 : 12,
+              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+          Text(
+            '${isMinus ? "- " : ""}${value.abs().toStringAsFixed(2)}',
+            style: TextStyle(
+              color: isBold ? Colors.white : Colors.white70,
+              fontSize: isBold ? 13 : 12,
+              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildStatCard(String title, double amount, IconData icon, Color color) {
     return Card(
       elevation: 2,

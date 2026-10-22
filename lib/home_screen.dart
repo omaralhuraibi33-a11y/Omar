@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'db_helper.dart';
+import 'audit_screen.dart';
+import 'stock_alerts_screen.dart';
 import 'login_screen.dart';
 
 import 'pos_screen.dart';
@@ -14,12 +16,85 @@ import 'shift_close_screen.dart';
 import 'financial_report_screen.dart';
 import 'vouchers_screen.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   final AppUser currentUser;
 
   const HomeScreen({super.key, required this.currentUser});
 
-  /// دالة عرض إجمالي المبالغ في الصندوق
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  String _mainButtonSizeSetting = 'وسط';
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final savedSize = await DBHelper.getSetting('main_button_size');
+    if (mounted) {
+      setState(() {
+        if (savedSize != null) {
+          _mainButtonSizeSetting = savedSize;
+        }
+        _isLoading = false;
+      });
+    }
+  }
+
+  int _getCrossAxisCount() {
+    switch (_mainButtonSizeSetting) {
+      case 'صغير':
+        return 3;
+      case 'كبير':
+        return 2;
+      case 'وسط':
+      default:
+        return 2;
+    }
+  }
+
+  double _getIconSize() {
+    switch (_mainButtonSizeSetting) {
+      case 'صغير':
+        return 28.0;
+      case 'كبير':
+        return 48.0;
+      case 'وسط':
+      default:
+        return 36.0;
+    }
+  }
+
+  double _getFontSize() {
+    switch (_mainButtonSizeSetting) {
+      case 'صغير':
+        return 12.0;
+      case 'كبير':
+        return 16.0;
+      case 'وسط':
+      default:
+        return 14.0;
+    }
+  }
+
+  double _getChildAspectRatio() {
+    switch (_mainButtonSizeSetting) {
+      case 'صغير':
+        return 1.0;
+      case 'كبير':
+        return 1.2;
+      case 'وسط':
+      default:
+        return 1.1;
+    }
+  }
+
   void _showCashBoxDialog(BuildContext context) async {
     double balance = await DBHelper.getMainVaultBalance();
 
@@ -57,10 +132,104 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
+  /// نافذة تغيير كلمة المرور للمستخدم الحالي
+  void _showChangePinDialog(BuildContext context) {
+    final oldPinController = TextEditingController();
+    final newPinController = TextEditingController();
+    final confirmPinController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('تغيير رمز الدخول (PIN)', textAlign: TextAlign.center),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: oldPinController,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'رمز الدخول الحالي',
+                prefixIcon: Icon(Icons.lock_outline),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: newPinController,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'رمز الدخول الجديد',
+                prefixIcon: Icon(Icons.lock_reset),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: confirmPinController,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'تأكيد الرمز الجديد',
+                prefixIcon: Icon(Icons.check_circle_outline),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (oldPinController.text != widget.currentUser.pin) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('رمز الدخول الحالي غير صحيح!'), backgroundColor: Colors.red),
+                );
+                return;
+              }
+
+              if (newPinController.text.isEmpty || newPinController.text != confirmPinController.text) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('الرمز الجديد غير متطابق!'), backgroundColor: Colors.red),
+                );
+                return;
+              }
+
+              // تحديث الرمز في قاعدة البيانات
+              final updatedUser = AppUser(
+                id: widget.currentUser.id,
+                name: widget.currentUser.name,
+                pin: newPinController.text,
+                isAdmin: widget.currentUser.isAdmin,
+                permissions: widget.currentUser.permissions,
+              );
+
+              await DBHelper.updateUser(updatedUser);
+              
+              if (!mounted) return;
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('تم تغيير رمز الدخول بنجاح!'), backgroundColor: Colors.green),
+              );
+            },
+            child: const Text('حفظ'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final List<Map<String, dynamic>> modules = [
-      {'title': 'نقطة البيع', 'icon': Icons.point_of_sale, 'color': Colors.blue, 'page': const PosScreen()},
+    final primaryColor = Theme.of(context).primaryColor;
+
+    final List<Map<String, dynamic>> allModules = [
+      if (widget.currentUser.isAdmin) {'title': 'سجل العمليات', 'icon': Icons.history, 'color': Colors.deepPurple, 'page': const AuditScreen()},
+      if (widget.currentUser.isAdmin) {'title': 'تنبيهات المخزون', 'icon': Icons.warning_amber, 'color': Colors.orangeAccent, 'page': const StockAlertsScreen()},
+      {'title': 'نقطة البيع', 'icon': Icons.point_of_sale, 'color': Colors.blue, 'page': PosScreen(currentUser: widget.currentUser)},
       {'title': 'المشتريات', 'icon': Icons.shopping_cart, 'color': Colors.orange, 'page': const PurchasesScreen()},
       {'title': 'المخزن', 'icon': Icons.inventory_2, 'color': Colors.teal, 'page': const InventoryScreen()},
       {'title': 'العملاء', 'icon': Icons.people, 'color': Colors.purple, 'page': const CustomersScreen()},
@@ -68,101 +237,130 @@ class HomeScreen extends StatelessWidget {
       {'title': 'التقارير', 'icon': Icons.bar_chart, 'color': Colors.green, 'page': const ReportsScreen()},
       {'title': 'إعدادات النظام', 'icon': Icons.settings, 'color': Colors.blueGrey, 'page': const SettingsScreen()},
       {'title': 'إدارة المستخدمين', 'icon': Icons.admin_panel_settings, 'color': Colors.deepOrange, 'page': const UsersScreen()},
-      {'title': 'إغلاق الصندوق / الوردية', 'icon': Icons.lock_clock, 'color': Colors.red, 'page': const ShiftCloseScreen()},
+      {'title': 'إغلاق الصندوق / الوردية', 'icon': Icons.lock_clock, 'color': Colors.red, 'page': ShiftCloseScreen(currentUser: widget.currentUser)},
       {'title': 'التقرير المالي', 'icon': Icons.account_balance_wallet, 'color': Colors.lightGreen, 'page': const FinancialReportScreen()},
       {'title': 'السندات', 'icon': Icons.receipt_long, 'color': Colors.amber, 'page': const VouchersScreen()},
       {'title': 'الصندوق', 'icon': Icons.savings, 'color': Colors.brown, 'isCashBox': true},
     ];
 
-    void navigateToScreen(Map<String, dynamic> item) {
+    // إظهار الأزرار المسموح بها فقط للمستخدم
+    final visibleModules = allModules.where((item) {
       String title = item['title'];
-      bool hasPermission = currentUser.isAdmin || (currentUser.permissions[title] ?? false);
+      return widget.currentUser.isAdmin || (widget.currentUser.permissions[title] ?? false);
+    }).toList();
 
-      if (!hasPermission) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('عفواً، لا تملك صلاحية الوصول لقسم: $title'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        return;
-      }
-
-      // إذا كان العنصر هو زر الصندوق، يفتح نافذة الإجمالي مباشرة
+    void navigateToScreen(Map<String, dynamic> item) async {
       if (item['isCashBox'] == true) {
         _showCashBoxDialog(context);
         return;
       }
 
-      Navigator.push(
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => Directionality(textDirection: TextDirection.rtl, child: item['page']),
         ),
       );
+
+      _loadSettings();
     }
 
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
         appBar: AppBar(
-          backgroundColor: Colors.indigo,
+          backgroundColor: primaryColor,
           foregroundColor: Colors.white,
-          title: Text('الصفحة الرئيسية (${currentUser.name})'),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.logout),
-              onPressed: () {
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (context) => const LoginScreen()),
-                );
-              },
-            )
-          ],
+          title: Text('الصفحة الرئيسية (${widget.currentUser.name})'),
         ),
-        body: GridView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: modules.length,
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
-            crossAxisSpacing: 14,
-            mainAxisSpacing: 14,
-            childAspectRatio: 1.1,
-          ),
-          itemBuilder: (context, index) {
-            final item = modules[index];
-            bool hasAccess = currentUser.isAdmin || (currentUser.permissions[item['title']] ?? false);
-
-            return Card(
-              elevation: hasAccess ? 3 : 1,
-              color: hasAccess ? Colors.white : Colors.grey.shade200,
-              child: InkWell(
-                onTap: () => navigateToScreen(item),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      item['icon'],
-                      size: 36,
-                      color: hasAccess ? item['color'] : Colors.grey,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      item['title'],
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: hasAccess ? Colors.black87 : Colors.grey,
-                      ),
-                    ),
-                    if (!hasAccess)
-                      const Icon(Icons.lock, size: 16, color: Colors.grey),
-                  ],
+        // --- القائمة الجانبية السريعة ---
+        drawer: Drawer(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              UserAccountsDrawerHeader(
+                decoration: BoxDecoration(color: primaryColor),
+                accountName: Text(
+                  widget.currentUser.name,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                accountEmail: Text(widget.currentUser.isAdmin ? 'مدير النظام' : 'مستخدم عادي'),
+                currentAccountPicture: CircleAvatar(
+                  backgroundColor: Colors.white,
+                  child: Icon(Icons.person, size: 40, color: primaryColor),
                 ),
               ),
-            );
-          },
+              ListTile(
+                leading: const Icon(Icons.lock_reset, color: Colors.blue),
+                title: const Text('تغيير رمز الدخول (PIN)'),
+                onTap: () {
+                  Navigator.pop(context); // إغلاق القائمة الجانبية
+                  _showChangePinDialog(context);
+                },
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.logout, color: Colors.red),
+                title: const Text('تسجيل الخروج'),
+                onTap: () {
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (context) => const LoginScreen()),
+                  );
+                },
+              ),
+            ],
+          ),
         ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : visibleModules.isEmpty
+                ? const Center(
+                    child: Text(
+                      'لا توجد صلاحيات متاحة لهذا الحساب',
+                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                    ),
+                  )
+                : GridView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: visibleModules.length,
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: _getCrossAxisCount(),
+                      crossAxisSpacing: 14,
+                      mainAxisSpacing: 14,
+                      childAspectRatio: _getChildAspectRatio(),
+                    ),
+                    itemBuilder: (context, index) {
+                      final item = visibleModules[index];
+
+                      return Card(
+                        elevation: 2,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => navigateToScreen(item),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                item['icon'],
+                                size: _getIconSize(),
+                                color: item['color'],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                item['title'],
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: _getFontSize(),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
       ),
     );
   }

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'db_helper.dart';
 
 class SuppliersScreen extends StatefulWidget {
@@ -102,197 +105,12 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
     );
   }
 
-  // تسديد مبلغ لمورد
-  void _showPaySupplierDialog(Supplier supplier) {
-    final amountController = TextEditingController();
-    final notesController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('تسديد حساب لمورد: ${supplier.name}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'الرصيد المستحق الحالي: ${supplier.balance.toStringAsFixed(2)}',
-              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: 'المبلغ المسدد *',
-                prefixIcon: Icon(Icons.attach_money),
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: notesController,
-              decoration: const InputDecoration(
-                labelText: 'ملاحظات / رقم السند',
-                prefixIcon: Icon(Icons.note),
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            onPressed: () async {
-              final amount = double.tryParse(amountController.text.trim());
-              if (amount == null || amount <= 0) return;
-
-              final now = DateTime.now().toString().split('.')[0];
-              await DBHelper.addSupplierTransaction(
-                supplierId: supplier.id,
-                type: 'payment',
-                debit: amount,
-                credit: 0.0,
-                date: now,
-                notes: notesController.text.trim(),
-              );
-
-              Navigator.pop(ctx);
-              _loadSuppliers();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('تم تسجيل دفعة التسديد بنجاح'), backgroundColor: Colors.green),
-              );
-            },
-            child: const Text('تسجيل السداد', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // نافذة كشف حساب المورد
-  void _showSupplierStatement(Supplier supplier) {
-    showDialog(
-      context: context,
-      builder: (ctx) => FutureBuilder<List<Map<String, dynamic>>>(
-        future: DBHelper.getSupplierStatement(supplier.id),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const AlertDialog(
-              content: SizedBox(
-                height: 100,
-                child: Center(child: CircularProgressIndicator()),
-              ),
-            );
-          }
-
-          final statementTransactions = snapshot.data ?? [];
-
-          return AlertDialog(
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('كشف حساب المورد: ${supplier.name}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                const SizedBox(height: 4),
-                Text(
-                  'المبلغ المستحق له: ${supplier.balance.toStringAsFixed(2)}',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: supplier.balance > 0 ? Colors.red : Colors.green,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: statementTransactions.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.all(20.0),
-                      child: Text('لا توجد حركات مسجلة لهذا المورد حتى الآن', textAlign: TextAlign.center),
-                    )
-                  : Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          color: Colors.grey.shade300,
-                          child: const Row(
-                            children: [
-                              Expanded(flex: 2, child: Text('التاريخ / الحركة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-                              Expanded(child: Text('له (دائن)', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.red))),
-                              Expanded(child: Text('عليه/مسدد (مدين)', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.green))),
-                              Expanded(child: Text('الرصيد', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-                            ],
-                          ),
-                        ),
-                        Flexible(
-                          child: ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: statementTransactions.length,
-                            itemBuilder: (ctx, index) {
-                              final item = statementTransactions[index];
-                              final credit = (item['credit'] as num?)?.toDouble() ?? 0.0;
-                              final debit = (item['debit'] as num?)?.toDouble() ?? 0.0;
-                              final runningBalance = (item['runningBalance'] as num?)?.toDouble() ?? 0.0;
-
-                              return Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                decoration: BoxDecoration(
-                                  border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      flex: 2,
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(item['type'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                                          Text(item['date'] ?? '', style: const TextStyle(color: Colors.grey, fontSize: 10)),
-                                        ],
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Text(
-                                        credit > 0 ? '${credit.toStringAsFixed(2)}' : '-',
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 12),
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Text(
-                                        debit > 0 ? '${debit.toStringAsFixed(2)}' : '-',
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12),
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Text(
-                                        runningBalance.toStringAsFixed(2),
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('إغلاق'),
-              ),
-            ],
-          );
-        },
+  // الانتقال إلى شاشة كاملة لعرض كشف حساب المورد وتصدير PDF
+  void _openSupplierStatementScreen(Supplier supplier) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SupplierStatementScreen(supplier: supplier),
       ),
     );
   }
@@ -398,15 +216,11 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
                                       ],
                                     ),
                                   ),
-                                  IconButton(
-                                    icon: const Icon(Icons.monetization_on, size: 20, color: Colors.green),
-                                    tooltip: 'تسديد حساب',
-                                    onPressed: () => _showPaySupplierDialog(sup),
-                                  ),
+                                  // تم إلغاء زر وسند التسديد المباشر من هنا
                                   IconButton(
                                     icon: const Icon(Icons.receipt_long, size: 20, color: Colors.teal),
                                     tooltip: 'كشف حساب',
-                                    onPressed: () => _showSupplierStatement(sup),
+                                    onPressed: () => _openSupplierStatementScreen(sup),
                                   ),
                                   IconButton(
                                     icon: const Icon(Icons.edit, size: 20, color: Colors.orange),
@@ -430,6 +244,250 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showSupplierDialog(),
         child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+/// شاشة كاملة لعرض كشف حساب المورد مع زر تصدير PDF بتصميم أنيق ومبسط
+class SupplierStatementScreen extends StatelessWidget {
+  final Supplier supplier;
+
+  const SupplierStatementScreen({super.key, required this.supplier});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('كشف حساب المورد: ${supplier.name}'),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.picture_as_pdf),
+            tooltip: 'تصدير PDF',
+            onPressed: () async {
+              final statementTransactions = await DBHelper.getSupplierStatement(supplier.id);
+              final pdf = pw.Document();
+              final arabicFont = await PdfGoogleFonts.cairoRegular();
+              final arabicBoldFont = await PdfGoogleFonts.cairoBold();
+
+              // حساب إجمالي الدائن والمدين للمورد
+              double totalCredit = 0;
+              double totalDebit = 0;
+              for (var item in statementTransactions) {
+                totalCredit += (item['credit'] as num?)?.toDouble() ?? 0.0;
+                totalDebit += (item['debit'] as num?)?.toDouble() ?? 0.0;
+              }
+
+              pdf.addPage(
+                pw.MultiPage(
+                  pageFormat: PdfPageFormat.a4,
+                  textDirection: pw.TextDirection.rtl,
+                  build: (pw.Context context) {
+                    return [
+                      // 1. ترويسة بسيطة لكشف المورد
+                      pw.Container(
+                        padding: const pw.EdgeInsets.all(12),
+                        decoration: pw.BoxDecoration(
+                          color: PdfColors.blueGrey50,
+                          borderRadius: pw.BorderRadius.circular(8),
+                        ),
+                        child: pw.Row(
+                          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                          children: [
+                            pw.Column(
+                              crossAxisAlignment: pw.CrossAxisAlignment.start,
+                              children: [
+                                pw.Text('كشف حساب مورد', style: pw.TextStyle(font: arabicBoldFont, fontSize: 16, color: PdfColors.blue900)),
+                                pw.SizedBox(height: 4),
+                                pw.Text('المورد: ${supplier.name}', style: pw.TextStyle(font: arabicFont, fontSize: 12)),
+                                if (supplier.phone.isNotEmpty)
+                                  pw.Text('الهاتف: ${supplier.phone}', style: pw.TextStyle(font: arabicFont, fontSize: 10, color: PdfColors.grey700)),
+                              ],
+                            ),
+                            pw.Column(
+                              crossAxisAlignment: pw.CrossAxisAlignment.end,
+                              children: [
+                                pw.Text('التاريخ: ${DateTime.now().toString().split(' ')[0]}', style: pw.TextStyle(font: arabicFont, fontSize: 10)),
+                                pw.SizedBox(height: 6),
+                                pw.Container(
+                                  padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: pw.BoxDecoration(
+                                    color: supplier.balance > 0 ? PdfColors.red100 : PdfColors.green100,
+                                    borderRadius: pw.BorderRadius.circular(4),
+                                  ),
+                                  child: pw.Text(
+                                    'المبلغ المستحق له: ${supplier.balance.toStringAsFixed(2)}',
+                                    style: pw.TextStyle(font: arabicBoldFont, fontSize: 11, color: supplier.balance > 0 ? PdfColors.red900 : PdfColors.green900),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      pw.SizedBox(height: 15),
+
+                      // 2. جدول الحركات المالي للمورد (مرتب من اليمين: التاريخ، نوع الحركة، له، عليه، الرصيد)
+                      pw.Table.fromTextArray(
+                        headers: ['التاريخ', 'نوع الحركة', 'له (دائن)', 'عليه/مسدد (مدين)', 'الرصيد'],
+                        data: statementTransactions.map((item) {
+                          final credit = (item['credit'] as num?)?.toDouble() ?? 0.0;
+                          final debit = (item['debit'] as num?)?.toDouble() ?? 0.0;
+                          final runningBalance = (item['runningBalance'] as num?)?.toDouble() ?? 0.0;
+                          return [
+                            item['date'] ?? '',
+                            item['type'] ?? '',
+                            credit > 0 ? credit.toStringAsFixed(2) : '-',
+                            debit > 0 ? debit.toStringAsFixed(2) : '-',
+                            runningBalance.toStringAsFixed(2),
+                          ];
+                        }).toList(),
+                        headerStyle: pw.TextStyle(font: arabicBoldFont, color: PdfColors.white, fontSize: 10),
+                        headerDecoration: const pw.BoxDecoration(color: PdfColors.blue800),
+                        cellStyle: pw.TextStyle(font: arabicFont, fontSize: 9),
+                        cellAlignment: pw.Alignment.center,
+                        columnWidths: {
+                          0: const pw.FlexColumnWidth(2.5),
+                          1: const pw.FlexColumnWidth(2),
+                          2: const pw.FlexColumnWidth(1.5),
+                          3: const pw.FlexColumnWidth(1.5),
+                          4: const pw.FlexColumnWidth(1.5),
+                        },
+                      ),
+                      pw.SizedBox(height: 15),
+
+                      // 3. ملخص الإجماليات والتوقيعات
+                      pw.Divider(),
+                      pw.Row(
+                        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                        children: [
+                          pw.Text('إجمالي الدائن (له): ${totalCredit.toStringAsFixed(2)}', style: pw.TextStyle(font: arabicBoldFont, fontSize: 10, color: PdfColors.red800)),
+                          pw.Text('إجمالي المدين (عليه): ${totalDebit.toStringAsFixed(2)}', style: pw.TextStyle(font: arabicBoldFont, fontSize: 10, color: PdfColors.green800)),
+                        ],
+                      ),
+                      pw.SizedBox(height: 30),
+                      pw.Row(
+                        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                        children: [
+                          pw.Text('توقيع المحاسب: .....................', style: pw.TextStyle(font: arabicFont, fontSize: 10)),
+                          pw.Text('توقيع المورد: .....................', style: pw.TextStyle(font: arabicFont, fontSize: 10)),
+                        ],
+                      )
+                    ];
+                  },
+                ),
+              );
+
+              await Printing.sharePdf(bytes: await pdf.save(), filename: 'كشف_حساب_مورد_${supplier.name}.pdf');
+            },
+          ),
+        ],
+      ),
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+        future: DBHelper.getSupplierStatement(supplier.id),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final statementTransactions = snapshot.data ?? [];
+
+          return Column(
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                color: Colors.blue.shade50,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('اسم المورد: ${supplier.name}',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 4),
+                    Text(
+                      'المبلغ المستحق له: ${supplier.balance.toStringAsFixed(2)}',
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: supplier.balance > 0 ? Colors.red : Colors.green,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(10),
+                color: Colors.grey.shade300,
+                child: const Row(
+                  children: [
+                    Expanded(flex: 2, child: Text('التاريخ / الحركة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+                    Expanded(child: Text('له (دائن)', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.red))),
+                    Expanded(child: Text('عليه/مسدد (مدين)', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.green))),
+                    Expanded(child: Text('الرصيد', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: statementTransactions.isEmpty
+                    ? const Center(
+                        child: Text('لا توجد حركات مسجلة لهذا المورد حتى الآن', textAlign: TextAlign.center),
+                      )
+                    : ListView.builder(
+                        itemCount: statementTransactions.length,
+                        itemBuilder: (ctx, index) {
+                          final item = statementTransactions[index];
+                          final credit = (item['credit'] as num?)?.toDouble() ?? 0.0;
+                          final debit = (item['debit'] as num?)?.toDouble() ?? 0.0;
+                          final runningBalance = (item['runningBalance'] as num?)?.toDouble() ?? 0.0;
+
+                          return Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                            decoration: BoxDecoration(
+                              border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  flex: 2,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(item['type'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                      Text(item['date'] ?? '', style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                                    ],
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    credit > 0 ? credit.toStringAsFixed(2) : '-',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    debit > 0 ? debit.toStringAsFixed(2) : '-',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 13),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    runningBalance.toStringAsFixed(2),
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
